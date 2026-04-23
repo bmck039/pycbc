@@ -1,48 +1,73 @@
-![GW150914](https://raw.githubusercontent.com/gwastro/pycbc-logo/master/pycbc_logo_name.png)
+# PyCBC — `optimized_match` Bug Fix
 
-[PyCBC](http://pycbc.org) is a software package used to explore astrophysical sources of gravitational waves.
-It contains algorithms to analyze gravitational-wave data,
-detect coalescing compact binaries, and make bayesian inferences from gravitational-wave data.
-PyCBC was used in the [first direct detection of gravitational waves](https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.116.061102) and
-is used in flagship analyses of LIGO and Virgo data.
+This is a fork of [gwastro/pycbc](https://github.com/gwastro/pycbc), a Python toolkit for gravitational wave data analysis used by the LIGO/Virgo/KAGRA scientific collaborations.
 
-PyCBC is collaboratively developed by the community and is lead by a team of GW astronomers with the
-aim to build accessible tools for gravitational-wave data analysis.
+This fork contains a bug fix for `pycbc.filter.matchedfilter.optimized_match()`, discovered during undergraduate research on distinguishing gravitational lensing from orbital precession in binary black hole merger waveforms.
 
-The PyCBC home page is located on github at
+> **Issue:** [#5144](https://github.com/gwastro/pycbc/issues/5144) — Extreme discontinuities in `optimized_match` that are not present in `match`
+> **Pull Request:** [#5146](https://github.com/gwastro/pycbc/pull/5146) — Open, reviewed and approved by PyCBC contributors
+> **Branch:** [`optimized_match-debug`](https://github.com/bmck039/pycbc/tree/optimized_match-debug)
 
- * https://pycbc.org/
+---
 
-Documentation is automatically built from the latest master version
+## The Bug
 
- * https://pycbc.org/pycbc/latest/html/
+### How it was discovered
 
-For the detailed installation instructions of PyCBC
+While computing the mismatch (`1 - match`) between lensed and unlensed gravitational wave signals across a parameter space of chirp masses and time delays, extreme discontinuities appeared in the output of `optimized_match()` that were completely absent when using the standard `match()` function on the same waveforms.
 
- * https://pycbc.org/pycbc/latest/html/install.html
+The discontinuities appeared as sharp spikes in 1D mismatch plots and as localized high-mismatch regions in 2D contour plots over parameter space — both highly anomalous results for what should be a smoothly varying quantity.
 
-Want to get going using PyCBC?
+### Root cause
 
- * [Try out our tutorials](https://github.com/gwastro/PyCBC-Tutorials). No software installation required and these can run entirely from the browser.
+`optimized_match()` uses `scipy.optimize.minimize_scalar` to refine the subsample time-shift that maximizes the match between two waveforms. The original implementation passed a `bracket` parameter to the optimizer instead of `bounds`, meaning the minimizer was **not constrained** to the valid time-shift window `(-delta_t, delta_t)`. In certain regions of waveform parameter space, the unconstrained optimizer found local minima outside this window and returned them as the result — producing physically incorrect match values.
 
-Quick Installation
-```
-pip install pycbc
-```
+This is a rare failure mode, but one with real scientific consequences: incorrect match values directly corrupt mismatch calculations used in parameter estimation and template bank studies.
 
-To test the code on your machine
-```
-pip install pytest "tox<4.0.0"
-tox
-```
+### The fix
 
-If you use any code from PyCBC in a scientific publication, then please see our [citation guidelines](http://pycbc.org/pycbc/latest/html/credit.html) for more details on how to cite pycbc algorithms and
-programs.
+**`pycbc/filter/matchedfilter.py`** — Changed the `minimize_scalar` call in `optimized_match()` to use the `'bounded'` method with `bounds=(-delta_t, delta_t)`, ensuring the optimizer always respects the valid time-shift window. Added a high-precision convergence step (`xatol=1e-8`) to maintain numerical accuracy equivalent to the original implementation.
 
-For the citation of the ``pycbc library``,  please use a bibtex entry and DOI for the
-appropriate release of the PyCBC software (or the latest available release).
-A bibtex key and DOI for each release is avaliable from [Zenodo](http://zenodo.org/).
+**`test/test_matchedfilter.py`** — Added `test_optimized_match_valid()`, a regression test using a known-tricky waveform pair that previously triggered the bug, asserting that `optimized_match() >= match()` as required by definition.
 
-[![DOI](https://zenodo.org/badge/31596861.svg)](https://zenodo.org/badge/latestdoi/31596861) [![Build Status](https://travis-ci.org/gwastro/pycbc.svg?branch=master)](https://travis-ci.org/gwastro/pycbc)
-[![PyPI version](https://badge.fury.io/py/PyCBC.svg)](https://badge.fury.io/py/PyCBC) ![PyPI - Downloads](https://img.shields.io/pypi/dm/pycbc) [![Anaconda-Server Badge](https://anaconda.org/conda-forge/pycbc/badges/version.svg)](https://anaconda.org/conda-forge/pycbc) [![Anaconda-Server Badge](https://anaconda.org/conda-forge/pycbc/badges/downloads.svg)](https://anaconda.org/conda-forge/pycbc)
-[![astropy](http://img.shields.io/badge/powered%20by-AstroPy-orange.svg?style=flat)](http://www.astropy.org/)
+**`test/testing_data.hdf5`** — Waveform and PSD fixture data for the regression test, stored in HDF5 format per PyCBC contributor recommendation.
+
+---
+
+## Development History
+
+The fix involved 16 commits across a two-day development sprint and an extended review cycle with PyCBC contributors:
+
+| Step | What happened |
+|------|---------------|
+| Bug discovery | Observed discontinuities in mismatch contour plots during lensing research |
+| Root cause analysis | Identified that `bracket=` does not enforce bounds in `minimize_scalar` |
+| Initial fix | Switched to `method='bounded'` with `bounds=(-delta_t, delta_t)` |
+| CI feedback | Contributor [@jacopok](https://github.com/jacopok) identified `bracket` → `bounds` keyword mismatch |
+| Precision issue | Bounded method initially failed 4-decimal accuracy test; iterated on `xatol` and convergence strategy |
+| Test data | Refactored fixture from Python pickle → inline Python → HDF5 at contributor request |
+| Rebase | Rebased onto `gwastro:master` (April 2026) to resolve unrelated CI failures |
+| Final review | Approved by [@jacopok](https://github.com/jacopok); remaining CI failure confirmed unrelated to the fix |
+
+---
+
+## Status
+
+The PR is **open and approved** by PyCBC contributors. The only remaining CI failure is an unrelated 404 on a virtual environment image mirror — not caused by any change in this PR.
+
+---
+
+## Context: The Research That Found This
+
+This bug was found during a Summer 2025 REU at the University of Texas at Dallas, investigating how to distinguish **gravitational lensing** effects from **regular orbital precession** in binary black hole merger gravitational wave signals. The research used `optimized_match()` to quantify the similarity between lensed and unlensed waveforms across a parameter space of chirp masses and lensing time delays.
+
+The anomalous mismatch spikes initially appeared to be a physical phenomenon. Realizing they were a numerical artifact of the optimizer — and then isolating, reproducing, and fixing the bug in a production codebase with an active test suite and contributor review process — was an unexpected but significant outcome of the project.
+
+---
+
+## About PyCBC
+
+PyCBC is an open-source Python toolkit for gravitational wave astronomy used by LIGO, Virgo, and KAGRA researchers worldwide. It provides tools for matched filtering, parameter estimation, template bank generation, and detector characterization.
+
+- Repository: [github.com/gwastro/pycbc](https://github.com/gwastro/pycbc)
+- Documentation: [pycbc.org](http://pycbc.org)
